@@ -106,41 +106,55 @@ public class TransactionMonitor {
      */
     private void triggerSlotRBF(String slotKey, TransactionRecord record) {
         try {
-            log.warn("RBF Triggered: Slot {}:{} is stuck. Retrying with higher gas.", record.getFrom(), record.getNonce());
+            // Asterdex 級風控：檢查重試次數
+            int maxRetries = relayerConfig.getMonitor().getMaxRbfRetries();
+            if (record.getRetryCount() >= maxRetries) {
+                log.warn("Risk Control: Slot {}:{} reached max RBF retries ({}). Entering Observation Mode.", 
+                        record.getFrom(), record.getNonce(), maxRetries);
+                // 標記為 FAILED 或 STUCK (這裡簡單改為 FAILED 並移除監控，實務上可改為轉人工)
+                record.setStatus(TransactionRecord.Status.FAILED);
+                updateRecord(TransactionRecord.SLOT_PREFIX + record.getFrom() + ":" + record.getNonce(), record);
+                redisTemplate.opsForZSet().remove(TransactionRecord.PENDING_ZSET, record.getFrom() + ":" + record.getNonce());
+                return;
+            }
+
+            log.warn("RBF Triggered: Slot {}:{} is stuck. Retry count: {}/{}", 
+                    record.getFrom(), record.getNonce(), record.getRetryCount() + 1, maxRetries);
             
             Credentials credentials = accountPool.getAccountByAddress(record.getFrom());
             
             // 提升 10% Gas Price
             BigInteger newGasPrice = record.getLatestGasPrice()
-                    .multiply(BigInteger.valueOf(110)).divide(BigInteger.valueOf(100));
-
-            // 重新簽署並廣播
-            RawTransaction rawTransaction = RawTransaction.createTransaction(
-                    record.getNonce(), newGasPrice, BigInteger.valueOf(100000), 
-                    record.getTo(), record.getValue(), record.getData());
+                    .multiply(BigInteger.valueOf(110))
+                    .divide(BigInteger.valueOf(100));
             
-            byte[] signedMessage = TransactionEncoder.signMessage(rawTransaction, credentials);
-            String hexValue = Numeric.toHexString(signedMessage);
-
-            EthSendTransaction sendResp = web3j.ethSendRawTransaction(hexValue).send();
-            if (sendResp.hasError()) {
-                log.error("RBF Broadcast rejected: {}", sendResp.getError().getMessage());
+            // 使用相同 Nonce 發送
+            RawTransaction rawTx = RawTransaction.createTransaction(
+                    record.getNonce(), newGasPrice, BigInteger.valueOf(21000), 
+                    "0xDemoRecipientAddress", BigInteger.ZERO, "0x");
+            
+            byte[] signedMessage = TransactionEncoder.signMessage(rawTx, credentials);
+            EthSendTransaction response = web3j.ethSendRawTransaction(Numeric.toHexString(signedMessage)).send();
+            
+            if (response.hasError()) {
+                log.error("RBF Broadcast failed: {}", response.getError().getMessage());
                 return;
             }
-
-            String newHash = sendResp.getTransactionHash();
-            log.info("RBF success: New TxHash -> {}", newHash);
-
-            // 更新 Slot 紀錄，並將新 Hash 加入歷史列表
+            
+            String newHash = response.getTransactionHash();
+            log.info("RBF Success! New Hash: {}", newHash);
+            
+            // 更新 Record
             record.setLatestTxHash(newHash);
             record.setLatestGasPrice(newGasPrice);
+            record.setRetryCount(record.getRetryCount() + 1); // 累加重試次數
             record.getHistoryTxHashes().add(newHash);
             record.setLastUpdatedAt(System.currentTimeMillis());
             
-            updateRecord(slotKey, record);
-
+            updateRecord(TransactionRecord.SLOT_PREFIX + record.getFrom() + ":" + record.getNonce(), record);
+            
         } catch (Exception e) {
-            log.error("RBF Implementation error for slot {}: {}", slotKey, e.getMessage());
+            log.error("RBF execution failed: {}", e.getMessage());
         }
     }
 
@@ -179,7 +193,11 @@ public class TransactionMonitor {
         return data == null ? null : objectMapper.readValue(data, TransactionRecord.class);
     }
 
-    private void updateRecord(String key, TransactionRecord record) throws Exception {
-        redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(record));
+    private void updateRecord(String key, TransactionRecord record) {
+        try {
+            redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(record));
+        } catch (Exception e) {
+            log.error("Failed to update record for key {}: {}", key, e.getMessage());
+        }
     }
 }

@@ -19,6 +19,10 @@ import java.util.List;
 @AllArgsConstructor
 public class TransactionRecord {
 
+    // Redis Key 規範
+    public static final String SLOT_PREFIX = "relayer:slot:record:";
+    public static final String PENDING_ZSET = "relayer:slots:pending";
+
     /**
      * 交易狀態枚舉
      */
@@ -37,6 +41,7 @@ public class TransactionRecord {
     
     private String latestTxHash;    // 當前最新嘗試的交易 Hash (RBF 後會更新)
     private BigInteger latestGasPrice; // 當前最新嘗試使用的 Gas Price
+    private int retryCount; // 已執行 RBF 的次數
     
     @Builder.Default
     private List<String> historyTxHashes = new ArrayList<>(); // 該 Slot 所有的 TxHashes (包含被覆蓋的)

@@ -32,5 +32,6 @@ public class RelayerConfig {
         private long scanInterval;
         private int rbfTimeoutSeconds;
         private int confirmationBlocks;
+        private int maxRbfRetries = 3;
     }
 }
