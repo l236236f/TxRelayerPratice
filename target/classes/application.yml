@@ -1,0 +1,25 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: tx-relayer
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+relayer:
+  rpc-url: ${ETH_RPC_URL:https://ethereum-holesky-rpc.publicnode.com}
+  account:
+    # 支援多個私鑰，逗號分隔
+    private-keys: ${ETH_PRIVATE_KEYS:}
+    # 預設 Gas 緩衝倍率
+    gas-multiplier: 1.1
+  monitor:
+    # 掃描間隔 (毫秒)
+    scan-interval: 10000
+    # RBF 等待秒數
+    rbf-timeout-seconds: 30
+    # 確認區塊數
+    confirmation-blocks: 6
