@@ -4,6 +4,39 @@
 
 ---
 
+## 📐 系統架構與流程圖 (Architecture)
+
+透過下方的時序圖，您可以一目了然地看到交易從進入 API 到最終鏈上確認的完整開發邏輯。
+
+```mermaid
+sequenceDiagram
+    participant U as 使用者 (API)
+    participant R as TransactionRelayer
+    participant N as NonceManager (Redis)
+    participant W as Web3j (Blockchain)
+    participant M as TransactionMonitor
+
+    U->>R: 1. POST /send (發送交易)
+    R->>N: 2. 領取 Nonce & 位址加鎖 (Atomic INCR)
+    R->>W: 3. 預估 Gas & 簽名廣播 (Web3j)
+    R->>N: 4. 存入 Slot 詳情 & PENDING 隊列
+    R-->>U: 5. 回傳交易 Hash
+
+    loop 每 10 秒掃描
+        M->>N: 6. 讀取 PENDING 隊列
+        M->>W: 7. 檢查 TxReceipt & 區塊高度
+        alt 已入塊且確認數足夠
+            M->>N: 8a. 標記 SUCCESS 並移除隊列
+        else 交易超時 (Stuck)
+            M->>R: 8b. 觸發 RBF 加速補發
+            R->>W: 9. 提升 Gas Price 重新廣播
+            R->>N: 10. 更新 Slot 紀錄 (新 Hash)
+        end
+    end
+```
+
+---
+
 ## 🚀 核心架構亮點 (Industrial Highlights)
 
 *   **Slot-based 交易追踪**：以 `(Address, Nonce)` 為唯一的槽位，精準追蹤 RBF 後的交易狀態。
