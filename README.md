@@ -4,33 +4,58 @@
 
 ---
 
-## 📐 系統架構與流程圖 (Architecture)
+## 📐 系統技術架構 (Architecture & Logic)
 
-透過下方的時序圖，您可以一目了然地看到交易從進入 API 到最終鏈上確認的完整開發邏輯。
+本專案的核心競爭力在於其嚴密的交易監控與風險控制邏輯。以下透過流程決策圖與時序圖進行深度解析。
+
+### 1. 交易監控決策流程 (Monitor Decision Logic)
+此流程展示了 `TransactionMonitor` 如何在背景自動處理「確認、加速、失敗」的三路分支。
+
+```mermaid
+flowchart TD
+    Start([監控週期啟動]) --> GetPending[從 Redis 讀取 PENDING 隊列]
+    GetPending --> CheckReceipt{鏈上是否有收據?}
+    
+    %% 重試/RBF 路徑
+    CheckReceipt -- 否 --> CheckTimeout{是否已超過 60s?}
+    CheckTimeout -- 否 --> NextCycle[等待下一週期]
+    CheckTimeout -- 是 --> CheckRetry{重試次數 < 3?}
+    CheckRetry -- 是 --> RBF[RBF 加速: 提升 110% Gas & 補發]
+    RBF --> UpdateHash[更新 TxHash & 累加次數] --> NextCycle
+    CheckRetry -- 否 --> Abort[觸發風控: 進入觀察模式/標記失敗] --> End([結束])
+
+    %% 確認/Finalize 路徑
+    CheckReceipt -- 是 --> CheckHeight{當前高度 - 入塊高度 >= 6?}
+    CheckHeight -- 否 --> Waiting[確認中: 累積區塊深度] --> NextCycle
+    CheckHeight -- 是 --> Finalize[標記 SUCCESS 並歸檔] --> End
+```
+
+### 2. 全生命週期時序圖 (Transaction Lifecycle)
 
 ```mermaid
 sequenceDiagram
-    participant U as 使用者 (API)
-    participant R as TransactionRelayer
-    participant N as NonceManager (Redis)
+    participant U as 外部 API
+    participant R as Relayer
+    participant N as NonceManager
+    participant RD as Redis (Slot Storage)
     participant W as Web3j (Blockchain)
-    participant M as TransactionMonitor
+    participant M as Monitor
 
-    U->>R: 1. POST /send (發送交易)
-    R->>N: 2. 領取 Nonce & 位址加鎖 (Atomic INCR)
-    R->>W: 3. 預估 Gas & 簽名廣播 (Web3j)
-    R->>N: 4. 存入 Slot 詳情 & PENDING 隊列
-    R-->>U: 5. 回傳交易 Hash
+    U->>R: POST /send (交易發送)
+    R->>N: 1. 原子領取 Nonce & 鎖定位址
+    R->>W: 2. 簽名並廣播原始交易 (RawTx)
+    R->>RD: 3. 建立 Slot 紀錄並排隊 (PENDING)
+    R-->>U: 4. 回傳初始 TxHash
 
-    loop 每 10 秒掃描
-        M->>N: 6. 讀取 PENDING 隊列
-        M->>W: 7. 檢查 TxReceipt & 區塊高度
-        alt 已入塊且確認數足夠
-            M->>N: 8a. 標記 SUCCESS 並移除隊列
-        else 交易超時 (Stuck)
-            M->>R: 8b. 觸發 RBF 加速補發
-            R->>W: 9. 提升 Gas Price 重新廣播
-            R->>N: 10. 更新 Slot 紀錄 (新 Hash)
+    loop 每 10 秒自動執行
+        M->>RD: 5. 掃描 PENDING 槽位
+        M->>W: 6. 查詢最新狀態與區塊高度
+        alt 偵測到交易卡住 (Stuck)
+            M->>R: 7a. 觸發 RBF 加速邏輯
+            R->>W: 8. 提升 Gas 重發 (相同 Nonce)
+            R->>RD: 9. 更新 Slot 的最新 Hash
+        else 到達確認深度 (Confirmed)
+            M->>RD: 7b. 標記 SUCCESS 並移除隊列
         end
     end
 ```
